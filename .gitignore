@@ -98,3 +98,8 @@ ehthumbs.db
 # Vite
 # =========================
 .vite/
+*.db
+__pycache__/
+.env
+*.h5
+*.keras
