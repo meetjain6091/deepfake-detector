@@ -44,7 +44,7 @@ This project builds and evaluates a deepfake classification model leveraging rea
 1. **Clone the repository:**
 
    ```bash
-   git clone <https://github.com/meetjain6091/deepfake-detector>
+   git clone https://github.com/meetjain6091/deepfake-detector
    cd deepfake-project
    ```
 
