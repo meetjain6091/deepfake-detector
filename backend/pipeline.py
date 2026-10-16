@@ -3,9 +3,11 @@ import numpy as np
 from PIL import Image
 import io
 import base64
+from pathlib import Path
 
-# Load OpenCV's built-in lightweight face detector (zero TensorFlow overhead)
-face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+# Initialize OpenCV Haar Cascade safely using stable cv2 data path
+cascade_path = cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
+face_cascade = cv2.CascadeClassifier(cascade_path)
 
 def process_image_pipeline(image_bytes: bytes):
     # 1. Load image from bytes
