@@ -1,3 +1,5 @@
+import os
+import urllib.request
 from pathlib import Path
 import numpy as np
 import tensorflow as tf
@@ -6,6 +8,10 @@ from tensorflow.keras.applications import EfficientNetB4
 
 INPUT_SHAPE = (224, 224, 3)
 QUANTUM_DIM = 64
+
+# Optional: Set your public cloud direct download link here (e.g., Google Drive / Hugging Face)
+# or configure it as an environment variable on Render named WEIGHTS_URL
+DEFAULT_CLOUD_WEIGHTS_URL = os.environ.get("WEIGHTS_URL", "")
 
 
 class SpatialAttention(layers.Layer):
@@ -128,13 +134,25 @@ def build_and_load_model(models_dir: Path) -> Model:
     # Path Resolution for Weights File
     weights_path = models_dir / "dual_paradigm_deepfake_model.weights.h5"
     if not weights_path.exists():
-        # Fallback to checking root directory if not inside models/ folder
         weights_path = models_dir.parent / "dual_paradigm_deepfake_model.weights.h5"
 
+    # If weights are missing locally (e.g. on Render cloud deployment), try downloading them
     if not weights_path.exists():
-        raise FileNotFoundError(
-            f"Weights file missing at expected path: {weights_path}"
-        )
+        print(f"Weights file not found locally at {weights_path}.")
+        if DEFAULT_CLOUD_WEIGHTS_URL:
+            print(f"Downloading weights from cloud storage...")
+            try:
+                urllib.request.urlretrieve(DEFAULT_CLOUD_WEIGHTS_URL, str(weights_path))
+                print("Model weights downloaded successfully.")
+            except Exception as e:
+                raise FileNotFoundError(
+                    f"Failed to download weights from cloud: {e}. Expected path: {weights_path}"
+                )
+        else:
+            raise FileNotFoundError(
+                f"Weights file missing at expected path: {weights_path}. "
+                "Please place the .weights.h5 file in your backend folder or set the WEIGHTS_URL environment variable."
+            )
 
     print(f"Loading weights into reconstructed architecture from: {weights_path}")
     final_model.load_weights(weights_path)
