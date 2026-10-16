@@ -139,7 +139,7 @@ def build_and_load_model(models_dir: Path) -> Model:
         weights_path.parent.mkdir(parents=True, exist_ok=True)
         try:
             url = f'https://drive.google.com/uc?id={GDRIVE_FILE_ID}'
-            gdown.download(url, str(weights_path), quiet=False, fuzzy=True)
+            gdown.download(url, str(weights_path), quiet=False)
             print("Model weights downloaded and saved successfully via gdown.")
         except Exception as e:
             raise FileNotFoundError(
