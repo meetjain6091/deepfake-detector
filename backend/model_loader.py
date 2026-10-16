@@ -1,16 +1,19 @@
 import os
 from pathlib import Path
+import urllib.request
 import numpy as np
 import tensorflow as tf
 from tensorflow.keras import Model, layers
 from tensorflow.keras.applications import EfficientNetB4
-import gdown
 
 INPUT_SHAPE = (224, 224, 3)
 QUANTUM_DIM = 64
 
-# Google Drive File ID for dual_paradigm_deepfake_model.weights.h5
-GDRIVE_FILE_ID = os.environ.get("GDRIVE_FILE_ID", "1QUp62FZYCpnHkI_WCbHs3QJAMKV7suBD")
+# Paste your direct Hugging Face download link here:
+DEFAULT_WEIGHTS_URL = os.environ.get(
+    "WEIGHTS_URL",
+    "https://huggingface.co/MEETJAIN6091/deepfake-detector-weights/resolve/main/dual_paradigm_deepfake_model.weights.h5"
+)
 
 
 class SpatialAttention(layers.Layer):
@@ -133,17 +136,19 @@ def build_and_load_model(models_dir: Path) -> Model:
     if not weights_path.exists():
         weights_path = models_dir.parent / "dual_paradigm_deepfake_model.weights.h5"
 
-    # If weights are missing locally (Render deployment), download them securely via gdown
+    # If weights are missing locally, download them from Hugging Face
     if not weights_path.exists():
-        print(f"Weights file not found locally. Downloading via gdown from Google Drive ID: {GDRIVE_FILE_ID}...")
+        print(f"Weights file not found locally. Downloading from Hugging Face...")
         weights_path.parent.mkdir(parents=True, exist_ok=True)
         try:
-            url = f'https://drive.google.com/uc?id={GDRIVE_FILE_ID}'
-            gdown.download(url, str(weights_path), quiet=False)
-            print("Model weights downloaded and saved successfully via gdown.")
+            headers = {'User-Agent': 'Mozilla/5.0'}
+            req = urllib.request.Request(DEFAULT_WEIGHTS_URL, headers=headers)
+            with urllib.request.urlopen(req) as response, open(weights_path, 'wb') as out_file:
+                out_file.write(response.read())
+            print("Model weights downloaded successfully from Hugging Face.")
         except Exception as e:
             raise FileNotFoundError(
-                f"Failed to download weights via gdown: {e}. Expected path: {weights_path}"
+                f"Failed to download weights from Hugging Face: {e}. Expected path: {weights_path}"
             )
 
     print(f"Loading weights into reconstructed architecture from: {weights_path}")
