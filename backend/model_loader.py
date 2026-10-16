@@ -9,13 +9,14 @@ from tensorflow.keras.applications import EfficientNetB4
 INPUT_SHAPE = (224, 224, 3)
 QUANTUM_DIM = 64
 
-# Optional: Set your public cloud direct download link here (e.g., Google Drive / Hugging Face)
-# or configure it as an environment variable on Render named WEIGHTS_URL
-DEFAULT_CLOUD_WEIGHTS_URL = os.environ.get("WEIGHTS_URL", "")
+# Direct download link generated from your Google Drive file ID
+DEFAULT_CLOUD_WEIGHTS_URL = os.environ.get(
+    "WEIGHTS_URL",
+    "https://drive.google.com/uc?export=download&id=1QUp62FZYCpnHkI_WCbHs3QJAMKV7suBD"
+)
 
 
 class SpatialAttention(layers.Layer):
-
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.attention_conv = layers.Conv2D(
@@ -28,7 +29,6 @@ class SpatialAttention(layers.Layer):
 
 
 class QuantumInspiredTransform(layers.Layer):
-
     def __init__(self, dim, **kwargs):
         super().__init__(**kwargs)
         self.dim = dim
@@ -65,6 +65,39 @@ def measurement_probabilities(x):
     return probabilities / (
         tf.reduce_sum(probabilities, axis=-1, keepdims=True) + 1e-8
     )
+
+
+def download_file_from_google_drive(url, destination):
+    """Helper to download files from Google Drive handling large file confirmation tokens."""
+    import http.cookiejar
+
+    cookie_jar = http.cookiejar.CookieJar()
+    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cookie_jar))
+    urllib.request.install_opener(opener)
+
+    print(f"Requesting download from cloud URL...")
+    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+
+    try:
+        with urllib.request.urlopen(req) as response:
+            content = response.read()
+            # Check if Google Drive returned a virus-warning HTML confirmation page instead of the binary file
+            if b'download-warning' in content:
+                # Extract confirmation token for large files
+                import re
+                token_match = re.search(r'confirm=([0-9A-Za-z_]+)', content.decode('utf-8', errors='ignore'))
+                if token_match:
+                    token = token_match.group(1)
+                    confirm_url = f"{url}&confirm={token}"
+                    req_confirm = urllib.request.Request(confirm_url, headers={'User-Agent': 'Mozilla/5.0'})
+                    with urllib.request.urlopen(req_confirm) as confirm_response:
+                        with open(destination, 'wb') as f:
+                            f.write(confirm_response.read())
+                    return
+            with open(destination, 'wb') as f:
+                f.write(content)
+    except Exception as e:
+        raise RuntimeError(f"Cloud download failed: {e}")
 
 
 def build_and_load_model(models_dir: Path) -> Model:
@@ -136,22 +169,16 @@ def build_and_load_model(models_dir: Path) -> Model:
     if not weights_path.exists():
         weights_path = models_dir.parent / "dual_paradigm_deepfake_model.weights.h5"
 
-    # If weights are missing locally (e.g. on Render cloud deployment), try downloading them
+    # If weights are missing locally (Render deployment), download them automatically
     if not weights_path.exists():
-        print(f"Weights file not found locally at {weights_path}.")
-        if DEFAULT_CLOUD_WEIGHTS_URL:
-            print(f"Downloading weights from cloud storage...")
-            try:
-                urllib.request.urlretrieve(DEFAULT_CLOUD_WEIGHTS_URL, str(weights_path))
-                print("Model weights downloaded successfully.")
-            except Exception as e:
-                raise FileNotFoundError(
-                    f"Failed to download weights from cloud: {e}. Expected path: {weights_path}"
-                )
-        else:
+        print(f"Weights file not found locally at {weights_path}. Downloading from Google Drive...")
+        weights_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            download_file_from_google_drive(DEFAULT_CLOUD_WEIGHTS_URL, weights_path)
+            print("Model weights downloaded and saved successfully.")
+        except Exception as e:
             raise FileNotFoundError(
-                f"Weights file missing at expected path: {weights_path}. "
-                "Please place the .weights.h5 file in your backend folder or set the WEIGHTS_URL environment variable."
+                f"Failed to download weights from cloud: {e}. Expected path: {weights_path}"
             )
 
     print(f"Loading weights into reconstructed architecture from: {weights_path}")
