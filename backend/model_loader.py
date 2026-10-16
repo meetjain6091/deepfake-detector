@@ -1,15 +1,24 @@
 import os
+import gc
 from pathlib import Path
 import urllib.request
 import numpy as np
 import tensorflow as tf
+
+# 1. Optimize TensorFlow memory limits for Render's 512MB environment
+tf.config.threading.set_inter_op_parallelism_threads(1)
+tf.config.threading.set_intra_op_parallelism_threads(1)
+
+# Enable mixed precision to cut memory usage of weights & activations in half
+tf.keras.mixed_precision.set_global_policy('mixed_float16')
+
 from tensorflow.keras import Model, layers
 from tensorflow.keras.applications import EfficientNetB4
 
 INPUT_SHAPE = (224, 224, 3)
 QUANTUM_DIM = 64
 
-# Paste your direct Hugging Face download link here:
+# Hugging Face direct download link for your weights
 DEFAULT_WEIGHTS_URL = os.environ.get(
     "WEIGHTS_URL",
     "https://huggingface.co/MEETJAIN6091/deepfake-detector-weights/resolve/main/dual_paradigm_deepfake_model.weights.h5"
@@ -20,7 +29,7 @@ class SpatialAttention(layers.Layer):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.attention_conv = layers.Conv2D(
-            filters=1, kernel_size=1, padding="same", activation="sigmoid"
+            filters=1, kernel_size=1, padding="same", activation="sigmoid", dtype='float32'
         )
 
     def call(self, inputs):
@@ -34,9 +43,7 @@ class QuantumInspiredTransform(layers.Layer):
         self.dim = dim
 
     def build(self, input_shape):
-        initializer = np.random.normal(size=(self.dim, self.dim)).astype(
-            np.float32
-        )
+        initializer = np.random.normal(size=(self.dim, self.dim)).astype(np.float32)
         q, _ = np.linalg.qr(initializer)
         q = q.astype(np.float32)
         self.unitary = self.add_weight(
@@ -44,6 +51,7 @@ class QuantumInspiredTransform(layers.Layer):
             shape=(self.dim, self.dim),
             initializer=tf.keras.initializers.Constant(q),
             trainable=True,
+            dtype='float32'
         )
         super().build(input_shape)
 
@@ -68,10 +76,11 @@ def measurement_probabilities(x):
 
 
 def build_and_load_model(models_dir: Path) -> Model:
-    # 1. EfficientNet Backbone & Shared Encoder Architecture
+    # 1. EfficientNetB4 Backbone with memory optimization
     efficientnet_backbone = EfficientNetB4(
         weights=None, include_top=False, input_shape=INPUT_SHAPE
     )
+    efficientnet_backbone.trainable = False
 
     input_layer = layers.Input(shape=INPUT_SHAPE, name="face_input")
     features = efficientnet_backbone(input_layer)
@@ -122,7 +131,7 @@ def build_and_load_model(models_dir: Path) -> Model:
     fusion_dense = layers.Dense(64, activation="relu", name="fusion_dense_64")(
         fusion_dense
     )
-    output = layers.Dense(1, activation="sigmoid", name="deepfake_output")(
+    output = layers.Dense(1, activation="sigmoid", name="deepfake_output", dtype='float32')(
         fusion_dense
     )
 
@@ -136,7 +145,7 @@ def build_and_load_model(models_dir: Path) -> Model:
     if not weights_path.exists():
         weights_path = models_dir.parent / "dual_paradigm_deepfake_model.weights.h5"
 
-    # If weights are missing locally, download them from Hugging Face
+    # Download weights from Hugging Face if missing
     if not weights_path.exists():
         print(f"Weights file not found locally. Downloading from Hugging Face...")
         weights_path.parent.mkdir(parents=True, exist_ok=True)
@@ -145,12 +154,16 @@ def build_and_load_model(models_dir: Path) -> Model:
             req = urllib.request.Request(DEFAULT_WEIGHTS_URL, headers=headers)
             with urllib.request.urlopen(req) as response, open(weights_path, 'wb') as out_file:
                 out_file.write(response.read())
-            print("Model weights downloaded successfully from Hugging Face.")
+            print("Model weights downloaded successfully.")
         except Exception as e:
             raise FileNotFoundError(
                 f"Failed to download weights from Hugging Face: {e}. Expected path: {weights_path}"
             )
 
-    print(f"Loading weights into reconstructed architecture from: {weights_path}")
+    print(f"Loading weights into EfficientNetB4 architecture from: {weights_path}")
     final_model.load_weights(weights_path)
+
+    # Clean up RAM post-loading
+    gc.collect()
+
     return final_model
