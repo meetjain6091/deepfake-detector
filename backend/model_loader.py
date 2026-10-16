@@ -1,15 +1,13 @@
 import os
 import gc
 from pathlib import Path
-import urllib.request
 import numpy as np
 import tensorflow as tf
 
-# 1. Optimize TensorFlow memory limits for Render's 512MB environment
+# Optimize TensorFlow memory limits for Render's 512MB environment
 tf.config.threading.set_inter_op_parallelism_threads(1)
 tf.config.threading.set_intra_op_parallelism_threads(1)
 
-# Enable mixed precision to fit EfficientNetB4 within Render's 512MB RAM limit
 tf.keras.mixed_precision.set_global_policy('mixed_float16')
 
 from tensorflow.keras import Model, layers
@@ -17,12 +15,6 @@ from tensorflow.keras.applications import EfficientNetB4
 
 INPUT_SHAPE = (224, 224, 3)
 QUANTUM_DIM = 64
-
-# Your Hugging Face direct download link
-DEFAULT_WEIGHTS_URL = os.environ.get(
-    "WEIGHTS_URL",
-    "https://huggingface.co/MEETJAIN6091/deepfake-detector-weights/resolve/main/dual_paradigm_deepfake_model.weights.h5"
-)
 
 
 class SpatialAttention(layers.Layer):
@@ -34,7 +26,6 @@ class SpatialAttention(layers.Layer):
 
     def call(self, inputs):
         attention_map = self.attention_conv(inputs)
-        # Cast attention map to match input dtype (fixes mixed precision float16/float32 mismatch)
         attention_map = tf.cast(attention_map, inputs.dtype)
         return inputs * attention_map
 
@@ -57,7 +48,6 @@ class QuantumInspiredTransform(layers.Layer):
         super().build(input_shape)
 
     def call(self, inputs):
-        # Cast weights to match input dtype
         unitary = tf.cast(self.unitary, inputs.dtype)
         return tf.matmul(inputs, unitary, transpose_b=True)
 
@@ -79,7 +69,6 @@ def measurement_probabilities(x):
 
 
 def build_and_load_model(models_dir: Path) -> Model:
-    # 1. EfficientNetB4 Backbone with memory optimization
     efficientnet_backbone = EfficientNetB4(
         weights=None, include_top=False, input_shape=INPUT_SHAPE
     )
@@ -102,7 +91,6 @@ def build_and_load_model(models_dir: Path) -> Model:
         inputs=input_layer, outputs=embedding, name="Siamese_Shared_Encoder"
     )
 
-    # 2. Quantum-Inspired Encoder Architecture
     quantum_input = layers.Input(shape=(500,), name="classical_embedding")
     x = layers.Dense(
         QUANTUM_DIM, activation=None, name="quantum_projection"
@@ -119,7 +107,6 @@ def build_and_load_model(models_dir: Path) -> Model:
         inputs=quantum_input, outputs=x, name="Quantum_Inspired_Encoder"
     )
 
-    # 3. Concatenation and Dual-Paradigm Classification Head
     final_input = layers.Input(shape=INPUT_SHAPE, name="final_face_input")
     classical_features = siamese_shared_encoder(final_input)
     quantum_features = quantum_encoder(classical_features)
@@ -134,7 +121,6 @@ def build_and_load_model(models_dir: Path) -> Model:
     fusion_dense = layers.Dense(64, activation="relu", name="fusion_dense_64")(
         fusion_dense
     )
-    # Ensure final output layer is explicitly float32 for numerical stability
     output = layers.Dense(1, activation="sigmoid", name="deepfake_output", dtype='float32')(
         fusion_dense
     )
@@ -144,30 +130,15 @@ def build_and_load_model(models_dir: Path) -> Model:
     )
     final_model.build((None, 224, 224, 3))
 
-    # Path Resolution for Weights File
     weights_path = models_dir / "dual_paradigm_deepfake_model.weights.h5"
     if not weights_path.exists():
         weights_path = models_dir.parent / "dual_paradigm_deepfake_model.weights.h5"
 
-    # Download weights from Hugging Face if missing
     if not weights_path.exists():
-        print(f"Weights file not found locally. Downloading from Hugging Face...")
-        weights_path.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            headers = {'User-Agent': 'Mozilla/5.0'}
-            req = urllib.request.Request(DEFAULT_WEIGHTS_URL, headers=headers)
-            with urllib.request.urlopen(req) as response, open(weights_path, 'wb') as out_file:
-                out_file.write(response.read())
-            print("Model weights downloaded successfully.")
-        except Exception as e:
-            raise FileNotFoundError(
-                f"Failed to download weights from Hugging Face: {e}. Expected path: {weights_path}"
-            )
+        raise FileNotFoundError(f"Weights file missing at {weights_path}")
 
     print(f"Loading weights into EfficientNetB4 architecture from: {weights_path}")
     final_model.load_weights(weights_path)
-
-    # Clean up RAM post-loading
     gc.collect()
 
     return final_model
