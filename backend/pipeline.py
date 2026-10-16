@@ -25,8 +25,9 @@ def process_image_pipeline(image_bytes: bytes):
     if len(faces) == 0:
         raise ValueError("No face detected in the uploaded image. Please upload a clear facial photo.")
 
-    # Select the largest face detected
+    # Select the largest face detected and cast to standard Python ints
     x, y, w_box, h_box = max(faces, key=lambda f: f[2] * f[3])
+    x, y, w_box, h_box = int(x), int(y), int(w_box), int(h_box)
     x2 = min(w, x + w_box)
     y2 = min(h, y + h_box)
 
@@ -35,12 +36,12 @@ def process_image_pipeline(image_bytes: bytes):
     right_eye = (int(x + w_box * 0.7), int(y + h_box * 0.4))
     keypoints = {'left_eye': left_eye, 'right_eye': right_eye}
 
-    # 3. Affine Alignment approximation
+    # 3. Affine Alignment approximation with explicit Python types
     d_x = right_eye[0] - left_eye[0]
     d_y = right_eye[1] - left_eye[1]
-    angle = np.degrees(np.arctan2(d_y, d_x))
+    angle = float(np.degrees(np.arctan2(d_y, d_x)))
 
-    center = ((x + x2) // 2, (y + y2) // 2)
+    center = (int((x + x2) / 2), int((y + y2) / 2))
     M = cv2.getRotationMatrix2D(center, angle, 1.0)
     aligned_cv2 = cv2.warpAffine(img_cv2, M, (w, h), flags=cv2.INTER_CUBIC)
 
