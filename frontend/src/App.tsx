@@ -118,7 +118,7 @@ export default function App() {
 
     try {
       const response = await axios.post<ApiResponse>(
-        "http://127.0.0.1:8000/predict",
+        "https://deepfake-detector-backend-unn3.onrender.com/predict",
         formData,
         {
           headers: {
