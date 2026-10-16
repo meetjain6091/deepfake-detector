@@ -1,13 +1,15 @@
 import json
+import gc
 from pathlib import Path
+from contextlib import asynccontextmanager
 
+import tensorflow as tf
 from database import DetectionLog, SessionLocal
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from model_loader import build_and_load_model
 from pipeline import process_image_pipeline
 from sqlalchemy.orm import Session
-from contextlib import asynccontextmanager
 
 BASE_DIR = Path(__file__).resolve().parent
 MODELS_DIR = BASE_DIR / "models"
@@ -18,6 +20,8 @@ model = None
 async def lifespan(app: FastAPI):
     global model
     print("Initializing Dual-Paradigm Deepfake Model on startup...")
+    tf.keras.backend.clear_session()
+    gc.collect()
     model = build_and_load_model(MODELS_DIR)
     print("Model ready for inference.")
     yield
@@ -36,7 +40,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
 def get_db():
     db = SessionLocal()
     try:
@@ -44,12 +47,15 @@ def get_db():
     finally:
         db.close()
 
-
 @app.post("/predict")
 @app.post("/api/detect")
 async def detect_deepfake(
     file: UploadFile = File(...), db: Session = Depends(get_db)
 ):
+    global model
+    if model is None:
+        model = build_and_load_model(MODELS_DIR)
+
     if not file.content_type.startswith("image/"):
         raise HTTPException(
             status_code=400, detail="Uploaded file must be a valid image."
@@ -57,11 +63,21 @@ async def detect_deepfake(
 
     try:
         contents = await file.read()
+
+        # Run image processing pipeline
         model_input, metadata, images_b64 = process_image_pipeline(contents)
 
-        prediction = model.predict(model_input, verbose=0)
+        # Force CPU execution context and predict with memory safeguards
+        with tf.device('/CPU:0'):
+            prediction = model.predict(model_input, verbose=0)
+
         fake_prob = float(prediction[0][0])
         real_prob = float(1.0 - fake_prob)
+
+        # Clear input tensors and run garbage collection immediately
+        del model_input
+        del prediction
+        gc.collect()
 
         threshold = 0.50
         label = "FAKE" if fake_prob >= threshold else "REAL"
@@ -105,10 +121,11 @@ async def detect_deepfake(
         }
 
     except ValueError as e:
+        gc.collect()
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
+        gc.collect()
         raise HTTPException(status_code=500, detail=f"Internal Error: {str(e)}")
-
 
 @app.get("/api/history")
 def get_detection_history(limit: int = 10, db: Session = Depends(get_db)):
