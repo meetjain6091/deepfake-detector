@@ -22,7 +22,7 @@ class SpatialAttention(layers.Layer):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.attention_conv = layers.Conv2D(
-            filters=1, kernel_size=1, padding="same", activation="sigmoid", dtype='float16'
+            filters=1, kernel_size=1, padding="same", activation="sigmoid", dtype='float32'
         )
 
     def call(self, inputs):
@@ -39,13 +39,13 @@ class QuantumInspiredTransform(layers.Layer):
     def build(self, input_shape):
         initializer = np.random.normal(size=(self.dim, self.dim)).astype(np.float32)
         q, _ = np.linalg.qr(initializer)
-        q = q.astype(np.float16)  # Use float16 for weights to save RAM
+        q = q.astype(np.float32)
         self.unitary = self.add_weight(
             name="unitary_transform",
             shape=(self.dim, self.dim),
             initializer=tf.keras.initializers.Constant(q),
             trainable=True,
-            dtype='float16'
+            dtype='float32'
         )
         super().build(input_shape)
 
@@ -71,22 +71,22 @@ def measurement_probabilities(x):
 
 
 def build_and_load_model(models_dir: Path) -> Model:
-    # Clear any lingering TF sessions to free up RAM
     tf.keras.backend.clear_session()
     gc.collect()
 
+    # EfficientNetB4 handles precision via global policy, no dtype argument needed here
     efficientnet_backbone = EfficientNetB4(
-        weights=None, include_top=False, input_shape=INPUT_SHAPE, dtype='float16'
+        weights=None, include_top=False, input_shape=INPUT_SHAPE
     )
     efficientnet_backbone.trainable = False
 
-    input_layer = layers.Input(shape=INPUT_SHAPE, name="face_input", dtype='float16')
+    input_layer = layers.Input(shape=INPUT_SHAPE, name="face_input")
     features = efficientnet_backbone(input_layer)
     refined_features = SpatialAttention(name="spatial_attention")(features)
     pooled_features = layers.GlobalAveragePooling2D(
         name="global_average_pooling"
     )(refined_features)
-    embedding = layers.Dense(500, activation="relu", name="embedding_dense", dtype='float16')(
+    embedding = layers.Dense(500, activation="relu", name="embedding_dense")(
         pooled_features
     )
     embedding = layers.Lambda(
@@ -97,9 +97,9 @@ def build_and_load_model(models_dir: Path) -> Model:
         inputs=input_layer, outputs=embedding, name="Siamese_Shared_Encoder"
     )
 
-    quantum_input = layers.Input(shape=(500,), name="classical_embedding", dtype='float16')
+    quantum_input = layers.Input(shape=(500,), name="classical_embedding")
     x = layers.Dense(
-        QUANTUM_DIM, activation=None, name="quantum_projection", dtype='float16'
+        QUANTUM_DIM, activation=None, name="quantum_projection"
     )(quantum_input)
     x = layers.Lambda(normalize_quantum_state, name="state_normalization")(x)
     x = QuantumInspiredTransform(
@@ -113,7 +113,7 @@ def build_and_load_model(models_dir: Path) -> Model:
         inputs=quantum_input, outputs=x, name="Quantum_Inspired_Encoder"
     )
 
-    final_input = layers.Input(shape=INPUT_SHAPE, name="final_face_input", dtype='float16')
+    final_input = layers.Input(shape=INPUT_SHAPE, name="final_face_input")
     classical_features = siamese_shared_encoder(final_input)
     quantum_features = quantum_encoder(classical_features)
 
@@ -121,13 +121,12 @@ def build_and_load_model(models_dir: Path) -> Model:
         [classical_features, quantum_features]
     )
 
-    fusion_dense = layers.Dense(256, activation="relu", name="fusion_dense_256", dtype='float16')(
+    fusion_dense = layers.Dense(256, activation="relu", name="fusion_dense_256")(
         fused_features
     )
-    fusion_dense = layers.Dense(64, activation="relu", name="fusion_dense_64", dtype='float16')(
+    fusion_dense = layers.Dense(64, activation="relu", name="fusion_dense_64")(
         fusion_dense
     )
-    # Output must be float32 for numerical stability with sigmoid
     output = layers.Dense(1, activation="sigmoid", name="deepfake_output", dtype='float32')(
         fusion_dense
     )
@@ -147,7 +146,6 @@ def build_and_load_model(models_dir: Path) -> Model:
     print(f"Loading memory-optimized EfficientNetB4 weights from: {weights_path}")
     final_model.load_weights(weights_path)
 
-    # Aggressive memory cleanup after loading weights
     gc.collect()
 
     return final_model
