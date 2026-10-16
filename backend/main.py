@@ -7,15 +7,25 @@ from fastapi.middleware.cors import CORSMiddleware
 from model_loader import build_and_load_model
 from pipeline import process_image_pipeline
 from sqlalchemy.orm import Session
+from contextlib import asynccontextmanager
 
 BASE_DIR = Path(__file__).resolve().parent
 MODELS_DIR = BASE_DIR / "models"
 
 model = None
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global model
+    print("Initializing Dual-Paradigm Deepfake Model on startup...")
+    model = build_and_load_model(MODELS_DIR)
+    print("Model ready for inference.")
+    yield
+
 app = FastAPI(
     title="Dual-Paradigm Deepfake Detector API",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
@@ -40,13 +50,6 @@ def get_db():
 async def detect_deepfake(
     file: UploadFile = File(...), db: Session = Depends(get_db)
 ):
-    global model
-    # Lazy-load the model on the first request to prevent startup OOM crashes
-    if model is None:
-        print("Lazy-loading EfficientNetB4 Dual-Paradigm Model on first request...")
-        model = build_and_load_model(MODELS_DIR)
-        print("Model loaded successfully.")
-
     if not file.content_type.startswith("image/"):
         raise HTTPException(
             status_code=400, detail="Uploaded file must be a valid image."
