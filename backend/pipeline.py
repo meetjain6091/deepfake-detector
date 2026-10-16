@@ -1,101 +1,109 @@
-import base64
-import io
 import cv2
-from mtcnn import MTCNN
 import numpy as np
 from PIL import Image
+import io
+import base64
+from mtcnn import MTCNN
 
+# Initialize MTCNN globally once to prevent memory leaks from repeated instantiations
 detector = None
 
-
-def get_detector():
+def get_mtcnn_detector():
     global detector
     if detector is None:
         detector = MTCNN()
     return detector
 
-
-def convert_np_to_b64(img_np_rgb: np.ndarray) -> str:
-    img_bgr = cv2.cvtColor(img_np_rgb, cv2.COLOR_RGB2BGR)
-    _, buffer = cv2.imencode(".png", img_bgr)
-    return base64.b64encode(buffer).decode("utf-8")
-
-
 def process_image_pipeline(image_bytes: bytes):
-    try:
-        pil_img = Image.open(io.BytesIO(image_bytes))
-        img_rgb = np.array(pil_img.convert("RGB"))
-    except Exception as e:
-        raise ValueError(f"Unable to decode input image: {e}")
+    # 1. Load image from bytes
+    image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    original_np = np.array(image)
+    h, w, _ = original_np.shape
 
-    mtcnn_detector = get_detector()
-    results = mtcnn_detector.detect_faces(img_rgb)
+    # Convert to BGR for OpenCV processing
+    img_cv2 = cv2.cvtColor(original_np, cv2.COLOR_RGB2BGR)
 
-    if len(results) == 0:
-        raise ValueError("No face detected in the uploaded image.")
+    # 2. Detect face using cached MTCNN detector
+    mtcnn = get_mtcnn_detector()
+    faces = mtcnn.detect_faces(img_cv2)
 
-    result = results[0]
-    x, y, w, h = result["box"]
-    x, y, w, h = max(0, x), max(0, y), max(0, w), max(0, h)
+    if not faces:
+        raise ValueError("No face detected in the uploaded image. Please upload a clear facial photo.")
 
-    # 1. Bounding Box & Eye Visualizations
-    vis_bbox_img = img_rgb.copy()
-    cv2.rectangle(vis_bbox_img, (x, y), (x + w, y + h), (0, 255, 0), 2)
+    # Select the face with the highest confidence
+    best_face = max(faces, key=lambda x: x['confidence'])
+    x, y, w_box, h_box = best_face['box']
 
-    keypoints = result["keypoints"]
-    left_eye = np.array(keypoints["left_eye"])
-    right_eye = np.array(keypoints["right_eye"])
+    # Ensure bounding box coordinates are within image boundaries
+    x = max(0, x)
+    y = max(0, y)
+    x2 = min(w, x + w_box)
+    y2 = min(h, y + h_box)
 
-    cv2.circle(vis_bbox_img, tuple(left_eye), 4, (255, 0, 0), -1)
-    cv2.circle(vis_bbox_img, tuple(right_eye), 4, (0, 0, 255), -1)
-    cv2.line(vis_bbox_img, tuple(left_eye), tuple(right_eye), (255, 255, 0), 2)
+    # Extract keypoints (eyes, nose, mouth)
+    keypoints = best_face['keypoints']
+    left_eye = keypoints['left_eye']
+    right_eye = keypoints['right_eye']
 
-    # 2. Eye Alignment & Rotation Calculation
-    delta_y = float(right_eye[1] - left_eye[1])
-    delta_x = float(right_eye[0] - left_eye[0])
-    angle = float(np.degrees(np.arctan2(delta_y, delta_x)))
-    eyes_center = (
-        int((left_eye[0] + right_eye[0]) / 2),
-        int((left_eye[1] + right_eye[1]) / 2),
-    )
+    # 3. Affine Alignment based on eye coordinates
+    d_x = right_eye[0] - left_eye[0]
+    d_y = right_eye[1] - left_eye[1]
+    angle = np.degrees(np.arctan2(d_y, d_x))
 
-    M = cv2.getRotationMatrix2D(eyes_center, angle, scale=1.0)
-    aligned_face = cv2.warpAffine(
-        img_rgb, M, (img_rgb.shape[1], img_rgb.shape[0])
-    )
+    center = ((x + x2) // 2, (y + y2) // 2)
+    M = cv2.getRotationMatrix2D(center, angle, 1.0)
+    aligned_cv2 = cv2.warpAffine(img_cv2, M, (w, h), flags=cv2.INTER_CUBIC)
 
-    # 3. Crop & Resizing
-    x2 = min(x + w, aligned_face.shape[1])
-    y2 = min(y + h, aligned_face.shape[0])
-    aligned_face_crop = aligned_face[y:y2, x:x2]
+    # Crop the aligned face region with padding
+    pad = int(0.2 * max(w_box, h_box))
+    crop_x1 = max(0, x - pad)
+    crop_y1 = max(0, y - pad)
+    crop_x2 = min(w, x2 + pad)
+    crop_y2 = min(h, y2 + pad)
 
-    if aligned_face_crop.size == 0:
-        raise ValueError("Face crop failed after alignment.")
+    face_crop = aligned_cv2[crop_y1:crop_y2, crop_x1:crop_x2]
+    if face_crop.size == 0:
+        face_crop = img_cv2[y:y2, x:x2]
 
-    resized_face = cv2.resize(aligned_face_crop, (224, 224))
+    # 4. Resize to 224x224 for EfficientNetB4
+    resized_face = cv2.resize(face_crop, (224, 224), interpolation=cv2.INTER_AREA)
+    resized_rgb = cv2.cvtColor(resized_face, cv2.COLOR_BGR2RGB)
 
-    # Matching inference notebook setup: float32 scaled tensor (0-255)
-    model_input = np.expand_dims(resized_face.astype(np.float32), axis=0)
+    # Prepare model input tensor (normalized to [0, 1])
+    model_input = np.expand_dims(resized_rgb.astype(np.float32) / 255.0, axis=0)
 
-    # Base64 Image Conversion
-    b64_original = convert_np_to_b64(img_rgb)
-    b64_bbox = convert_np_to_b64(vis_bbox_img)
-    b64_aligned = convert_np_to_b64(aligned_face_crop)
-    b64_resized = convert_np_to_b64(resized_face)
+    # Generate visualizations for the 2x2 UI matrix
+    # Stage 1: Original
+    _, orig_encoded = cv2.imencode('.jpg', img_cv2)
+    orig_b64 = base64.b64encode(orig_encoded).decode('utf-8')
+
+    # Stage 2: Bounding Box & Landmarks
+    bbox_img = img_cv2.copy()
+    cv2.rectangle(bbox_img, (x, y), (x2, y2), (0, 255, 0), 2)
+    for key, point in keypoints.items():
+        cv2.circle(bbox_img, point, 4, (0, 0, 255), -1)
+    _, bbox_encoded = cv2.imencode('.jpg', bbox_img)
+    bbox_b64 = base64.b64encode(bbox_encoded).decode('utf-8')
+
+    # Stage 3: Aligned Crop
+    _, aligned_encoded = cv2.imencode('.jpg', face_crop)
+    aligned_b64 = base64.b64encode(aligned_encoded).decode('utf-8')
+
+    # Stage 4: Resized 224x224 Tensor view
+    _, tensor_encoded = cv2.imencode('.jpg', resized_face)
+    tensor_b64 = base64.b64encode(tensor_encoded).decode('utf-8')
 
     metadata = {
-        "num_faces": len(results),
-        "bbox": [int(x), int(y), int(w), int(h)],
-        "left_eye": left_eye.tolist(),
-        "right_eye": right_eye.tolist(),
-        "angle": round(angle, 3),
+        "num_faces": len(faces),
+        "bbox": [int(x), int(y), int(w_box), int(h_box)],
+        "angle": round(float(angle), 2)
     }
 
     images_b64 = {
-        "original": f"data:image/png;base64,{b64_original}",
-        "bounding_box": f"data:image/png;base64,{b64_bbox}",
-        "aligned_crop": f"data:image/png;base64,{b64_aligned}",
-        "resized_224": f"data:image/png;base64,{b64_resized}",
+        "original": f"data:image/jpeg;base64,{orig_b64}",
+        "bounding_box": f"data:image/jpeg;base64,{bbox_b64}",
+        "aligned_crop": f"data:image/jpeg;base64,{aligned_b64}",
+        "resized_224": f"data:image/jpeg;base64,{tensor_b64}"
     }
 
     return model_input, metadata, images_b64
