@@ -9,7 +9,7 @@ import tensorflow as tf
 tf.config.threading.set_inter_op_parallelism_threads(1)
 tf.config.threading.set_intra_op_parallelism_threads(1)
 
-# Enable mixed precision to cut memory usage of weights & activations in half
+# Enable mixed precision to fit EfficientNetB4 within Render's 512MB RAM limit
 tf.keras.mixed_precision.set_global_policy('mixed_float16')
 
 from tensorflow.keras import Model, layers
@@ -18,7 +18,7 @@ from tensorflow.keras.applications import EfficientNetB4
 INPUT_SHAPE = (224, 224, 3)
 QUANTUM_DIM = 64
 
-# Hugging Face direct download link for your weights
+# Your Hugging Face direct download link
 DEFAULT_WEIGHTS_URL = os.environ.get(
     "WEIGHTS_URL",
     "https://huggingface.co/MEETJAIN6091/deepfake-detector-weights/resolve/main/dual_paradigm_deepfake_model.weights.h5"
@@ -29,11 +29,13 @@ class SpatialAttention(layers.Layer):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.attention_conv = layers.Conv2D(
-            filters=1, kernel_size=1, padding="same", activation="sigmoid", dtype='float32'
+            filters=1, kernel_size=1, padding="same", activation="sigmoid"
         )
 
     def call(self, inputs):
         attention_map = self.attention_conv(inputs)
+        # Cast attention map to match input dtype (fixes mixed precision float16/float32 mismatch)
+        attention_map = tf.cast(attention_map, inputs.dtype)
         return inputs * attention_map
 
 
@@ -51,12 +53,13 @@ class QuantumInspiredTransform(layers.Layer):
             shape=(self.dim, self.dim),
             initializer=tf.keras.initializers.Constant(q),
             trainable=True,
-            dtype='float32'
         )
         super().build(input_shape)
 
     def call(self, inputs):
-        return tf.matmul(inputs, self.unitary, transpose_b=True)
+        # Cast weights to match input dtype
+        unitary = tf.cast(self.unitary, inputs.dtype)
+        return tf.matmul(inputs, unitary, transpose_b=True)
 
     def get_config(self):
         config = super().get_config()
@@ -131,6 +134,7 @@ def build_and_load_model(models_dir: Path) -> Model:
     fusion_dense = layers.Dense(64, activation="relu", name="fusion_dense_64")(
         fusion_dense
     )
+    # Ensure final output layer is explicitly float32 for numerical stability
     output = layers.Dense(1, activation="sigmoid", name="deepfake_output", dtype='float32')(
         fusion_dense
     )
